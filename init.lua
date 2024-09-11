@@ -89,9 +89,9 @@ P.S. You can delete this when you're done too. It's your config now! :)
 --  NOTE: Must happen before plugins are loaded (otherwise wrong leader will be used)
 vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
-
+vim.g.python3_host_prog = '/home/chris/.config/nvim/.venv/bin/python3'
 -- Set to true if you have a Nerd Font installed and selected in the terminal
-vim.g.have_nerd_font = false
+vim.g.have_nerd_font = true
 
 -- [[ Setting options ]]
 -- See `:help vim.opt`
@@ -157,8 +157,19 @@ vim.opt.cursorline = true
 -- Minimal number of screen lines to keep above and below the cursor.
 vim.opt.scrolloff = 10
 
--- [[ Basic Keymaps ]]
---  See `:help vim.keymap.set()`
+vim.keymap.set('n', '<leader>sp', function()
+  require('telescope.builtin').find_files { cwd = vim.fn.getcwd(), extensions = { 'py' } }
+end, { desc = '[S]earch [P]ython files' })
+
+-- Keymap to run pytest
+vim.keymap.set('n', '<leader>rf', function()
+  vim.cmd '!pytest %'
+end, { desc = '[R]un [F]ile with pytest' })
+
+-- Keymap to search Python documentation symbols
+vim.keymap.set('n', '<leader>pd', function()
+  require('telescope.builtin').lsp_document_symbols { prompt_title = 'Python Docs' }
+end, { desc = '[P]ython [D]ocumentation Symbols' })
 
 -- Clear highlights on search when pressing <Esc> in normal mode
 --  See `:help hlsearch`
@@ -228,9 +239,20 @@ vim.opt.rtp:prepend(lazypath)
 --
 -- NOTE: Here is where you install your plugins.
 require('lazy').setup({
+  { -- Debugging for Python
+    'mfussenegger/nvim-dap',
+    config = function()
+      require('dap-python').setup '~/.virtualenvs/debugpy/bin/python'
+      vim.keymap.set('n', '<F5>', require('dap').continue, { desc = 'Debug: Start/Continue' })
+      vim.keymap.set('n', '<F10>', require('dap').step_over, { desc = 'Debug: Step Over' })
+      vim.keymap.set('n', '<F11>', require('dap').step_into, { desc = 'Debug: Step Into' })
+      vim.keymap.set('n', '<F12>', require('dap').step_out, { desc = 'Debug: Step Out' })
+    end,
+  },
   -- NOTE: Plugins can be added with a link (or for a github repo: 'owner/repo' link).
   'tpope/vim-sleuth', -- Detect tabstop and shiftwidth automatically
-
+  { 'wakatime/vim-wakatime', lazy = false },
+  { 'github/copilot.vim' },
   -- NOTE: Plugins can also be added by using a table,
   -- with the first argument being the link and the following
   -- keys can be used to configure plugin behavior/loading/etc.
@@ -459,6 +481,7 @@ require('lazy').setup({
       { 'williamboman/mason.nvim', config = true }, -- NOTE: Must be loaded before dependants
       'williamboman/mason-lspconfig.nvim',
       'WhoIsSethDaniel/mason-tool-installer.nvim',
+      { 'jay-babu/mason-null-ls.nvim' },
 
       -- Useful status updates for LSP.
       -- NOTE: `opts = {}` is the same as calling `require('fidget').setup({})`
@@ -604,34 +627,22 @@ require('lazy').setup({
       --  - capabilities (table): Override fields in capabilities. Can be used to disable certain LSP features.
       --  - settings (table): Override the default settings passed when initializing the server.
       --        For example, to see the options for `lua_ls`, you could go to: https://luals.github.io/wiki/settings/
-      local servers = {
-        -- clangd = {},
-        -- gopls = {},
-        -- pyright = {},
-        -- rust_analyzer = {},
-        -- ... etc. See `:help lspconfig-all` for a list of all the pre-configured LSPs
-        --
-        -- Some languages (like typescript) have entire language plugins that can be useful:
-        --    https://github.com/pmizio/typescript-tools.nvim
-        --
-        -- But for many setups, the LSP (`ts_ls`) will work just fine
-        -- ts_ls = {},
-        --
 
-        lua_ls = {
-          -- cmd = {...},
-          -- filetypes = { ...},
-          -- capabilities = {},
+      local servers = {
+        pyright = {}, -- Python LSP
+        tsserver = {}, -- JavaScript/TypeScript LSP
+        lua_ls = { -- Lua LSP (updated name)
           settings = {
             Lua = {
               completion = {
                 callSnippet = 'Replace',
               },
-              -- You can toggle below to ignore Lua_LS's noisy `missing-fields` warnings
-              -- diagnostics = { disable = { 'missing-fields' } },
+              diagnostics = { globals = { 'vim' } }, -- Suppress undefined global 'vim' warnings
             },
           },
         },
+        rust_analyzer = {}, -- Rust LSP
+        -- Add other servers as needed...
       }
 
       -- Ensure the servers and tools above are installed
@@ -651,19 +662,50 @@ require('lazy').setup({
       require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
       require('mason-lspconfig').setup {
+        ensure_installed = vim.tbl_keys(servers),
+        automatic_installation = true,
         handlers = {
           function(server_name)
             local server = servers[server_name] or {}
             -- This handles overriding only values explicitly passed
             -- by the server configuration above. Useful when disabling
-            -- certain features of an LSP (for example, turning off formatting for ts_ls)
-            server.capabilities = vim.tbl_deep_extend('force', {}, capabilities, server.capabilities or {})
+            -- certain features of an LSP (for example, turning off formatting for tsserver)
             require('lspconfig')[server_name].setup(server)
           end,
         },
       }
+
+      require('mason-null-ls').setup {
+        ensure_installed = { 'prettier', 'eslint_d', 'black', 'flake8' }, -- Add linters/formatters here
+        automatic_installation = true,
+      }
+
+      -- Configure null-ls with Mason
+      local null_ls = require 'null-ls'
+
+      null_ls.setup {
+        sources = {
+          null_ls.builtins.formatting.prettier, -- JavaScript/TypeScript formatter
+          null_ls.builtins.formatting.black, -- Python formatter
+          null_ls.builtins.formatting.isort, -- Python import sorter
+          null_ls.builtins.diagnostics.flake8, -- Python linter
+          null_ls.builtins.diagnostics.eslint_d, -- JavaScript/TypeScript linter
+          -- Add more formatters/linters here
+        },
+        on_attach = function(client, bufnr)
+          if client.supports_method 'textDocument/formatting' then
+            vim.api.nvim_create_autocmd('BufWritePre', {
+              buffer = bufnr,
+              callback = function()
+                vim.lsp.buf.format { bufnr = bufnr }
+              end,
+            })
+          end
+        end,
+      }
     end,
   },
+  { 'jose-elias-alvarez/null-ls.nvim' },
 
   { -- Autoformat
     'stevearc/conform.nvim',
@@ -698,6 +740,7 @@ require('lazy').setup({
         }
       end,
       formatters_by_ft = {
+        python = { 'black', 'isort' },
         lua = { 'stylua' },
         -- Conform can also run multiple formatters sequentially
         -- python = { "isort", "black" },
@@ -725,15 +768,12 @@ require('lazy').setup({
           return 'make install_jsregexp'
         end)(),
         dependencies = {
-          -- `friendly-snippets` contains a variety of premade snippets.
-          --    See the README about individual language/framework/plugin snippets:
-          --    https://github.com/rafamadriz/friendly-snippets
-          -- {
-          --   'rafamadriz/friendly-snippets',
-          --   config = function()
-          --     require('luasnip.loaders.from_vscode').lazy_load()
-          --   end,
-          -- },
+          {
+            'rafamadriz/friendly-snippets',
+            config = function()
+              require('luasnip.loaders.from_vscode').lazy_load()
+            end,
+          },
         },
       },
       'saadparwaiz1/cmp_luasnip',
@@ -888,7 +928,7 @@ require('lazy').setup({
     main = 'nvim-treesitter.configs', -- Sets main module to use for opts
     -- [[ Configure Treesitter ]] See `:help nvim-treesitter`
     opts = {
-      ensure_installed = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' },
+      ensure_installed = { 'python', 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' },
       -- Autoinstall languages that are not installed
       auto_install = true,
       highlight = {
@@ -916,13 +956,13 @@ require('lazy').setup({
   --
   --  Here are some example plugins that I've included in the Kickstart repository.
   --  Uncomment any of the lines below to enable them (you will need to restart nvim).
-  --
-  -- require 'kickstart.plugins.debug',
-  -- require 'kickstart.plugins.indent_line',
-  -- require 'kickstart.plugins.lint',
-  -- require 'kickstart.plugins.autopairs',
-  -- require 'kickstart.plugins.neo-tree',
-  -- require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
+
+  require 'kickstart.plugins.debug',
+  require 'kickstart.plugins.indent_line',
+  require 'kickstart.plugins.lint',
+  require 'kickstart.plugins.autopairs',
+  require 'kickstart.plugins.neo-tree',
+  require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
 
   -- NOTE: The import below can automatically add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
   --    This is the easiest way to modularize your config.
